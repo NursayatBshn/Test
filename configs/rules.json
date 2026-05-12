@@ -1,0 +1,26 @@
+{
+  "enabled": true,
+  "rules": [
+    { "extension": ".jpg", "target": "Images" },
+    { "extension": ".jpeg", "target": "Images" },
+    { "extension": ".png", "target": "Images" },
+    { "extension": ".gif", "target": "Images" },
+    { "extension": ".bmp", "target": "Images" },
+    { "extension": ".webp", "target": "Images" },
+    { "extension": ".pdf", "target": "Documents" },
+    { "extension": ".txt", "target": "Documents" },
+    { "extension": ".doc", "target": "Documents" },
+    { "extension": ".docx", "target": "Documents" },
+    { "extension": ".xls", "target": "Documents" },
+    { "extension": ".xlsx", "target": "Documents" },
+    { "extension": ".ppt", "target": "Documents" },
+    { "extension": ".pptx", "target": "Documents" },
+    { "extension": ".zip", "target": "Archives" },
+    { "extension": ".rar", "target": "Archives" },
+    { "extension": ".7z", "target": "Archives" },
+    { "extension": ".tar", "target": "Archives" },
+    { "extension": ".tar.gz", "target": "Archives" },
+    { "extension": ".gz", "target": "Archives" },
+    { "extension": ".mp4", "target": "Videos" }
+  ]
+} 

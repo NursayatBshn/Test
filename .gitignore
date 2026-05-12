@@ -1,0 +1,17 @@
+# Виртуальное окружение
+.venv/
+venv/
+ENV/
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Системные файлы
+.DS_Store
+
+# Базы данных и логи (чтобы история команд не улетала в публичный доступ)
+data/history.json
+data/logs.json
+data/rollback.json
