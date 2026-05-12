@@ -2,11 +2,16 @@ import os
 import shutil
 import re
 import json
+import sys
+import termios
+import tty
 
 from abstractions.base_task import BaseTask
 from utils.decorators import log_execution
 from services.result_formatter import ResultFormatter
 from services.rule_engine import RuleEngine
+from services.storage_services import DATA_ROOT
+from services.app_config import AppConfig
 
 def file_generator(path, ext=None):
     """Generator for lazy directory traversal (for search)."""
@@ -20,7 +25,15 @@ def file_generator(path, ext=None):
 
 class SearchTask(BaseTask):
     def __init__(self):
-        super().__init__("search", "Searches for files by filters (--path, --ext)")
+        super().__init__(
+            "search",
+            "Searches for files by filters",
+            usage="search --path <folder> [--ext <extension>]",
+            examples=[
+                "search --path /home/user/Downloads",
+                "search --path /home/user/Downloads --ext .pdf"
+            ]
+        )
 
     @log_execution
     def execute(self, args):
@@ -66,7 +79,12 @@ class SearchTask(BaseTask):
 
 class OrganizeTask(BaseTask):
     def __init__(self, logger=None):
-        super().__init__("organize", "Sorts files in the specified folder (--path)")
+        super().__init__(
+            "organize",
+            "Sorts files in the specified folder using configs/rules.json",
+            usage="organize --path <folder>",
+            examples=["organize --path /home/user/Downloads"]
+        )
         self.rule_engine = RuleEngine(os.path.join("configs", "rules.json"))
         self.logger = logger
 
@@ -185,7 +203,12 @@ class OrganizeTask(BaseTask):
 
 class CleanupTask(BaseTask):
     def __init__(self):
-        super().__init__("cleanup", "Deletes empty folders in the specified directory (--path)")
+        super().__init__(
+            "cleanup",
+            "Deletes empty folders in the specified directory",
+            usage="cleanup --path <folder>",
+            examples=["cleanup --path /home/user/Downloads"]
+        )
 
     @log_execution
     def execute(self, args):
@@ -213,14 +236,29 @@ class CleanupTask(BaseTask):
 
 class HelpTask(BaseTask):
     def __init__(self, tasks_dict):
-        super().__init__("help", "Shows the command list (use 'help <command>' for details)")
+        super().__init__(
+            "help",
+            "Shows the command list or details for one command",
+            usage="help [command]",
+            examples=["help", "help logs", "help organize"]
+        )
         self.tasks_dict = tasks_dict
 
     def execute(self, args):
         args = args.strip().lower()
         if args in self.tasks_dict:
             task = self.tasks_dict[args]
-            return f"Help for command '{task.name}':\n  Description: {task.description}"
+            lines = [
+                f"Help for command '{task.name}':",
+                f"  Description: {task.description}"
+            ]
+            if task.usage:
+                lines.append(f"  Usage: {task.usage}")
+            if task.examples:
+                lines.append("  Examples:")
+                for example in task.examples:
+                    lines.append(f"    {example}")
+            return "\n".join(lines)
         elif args:
             raise ValueError(f"Command '{args}' not found. Enter 'help' for the command list.")
 
@@ -231,8 +269,14 @@ class HelpTask(BaseTask):
 
 class HistoryTask(BaseTask):
     def __init__(self):
-        super().__init__("history", "Shows the history of executed commands")
-        self.history_file = os.path.join("data", "history.json")
+        self.display_limit = AppConfig.get("history", "display_limit", 100)
+        super().__init__(
+            "history",
+            f"Shows up to the last {self.display_limit} executed commands",
+            usage="history",
+            examples=["history"]
+        )
+        self.history_file = os.path.join(DATA_ROOT, "history.json")
 
     def execute(self, args):
         if not os.path.exists(self.history_file):
@@ -247,7 +291,7 @@ class HistoryTask(BaseTask):
         if not data:
             return "History is empty."
 
-        recent_data = data[-10:]
+        recent_data = data[-self.display_limit:]
         headers = ["Time", "Command", "Status"]
         rows = [[item.get('timestamp', '-'), item.get('command', '-'), item.get('status', '-')] for item in recent_data]
 
@@ -255,36 +299,191 @@ class HistoryTask(BaseTask):
 
 class LogsTask(BaseTask):
     def __init__(self):
-        super().__init__("logs", "Shows system logs")
-        self.logs_file = os.path.join("data", "logs.json")
+        self.page_size = AppConfig.get("logs", "page_size", 10)
+        self.message_width = AppConfig.get("logs", "message_width", 30)
+        self.details_width = AppConfig.get("logs", "details_width", 70)
+        self.min_pager_width = AppConfig.get("logs", "min_pager_width", 60)
+        self.default_pager_width = AppConfig.get("logs", "default_pager_width", 100)
+        self.max_separator_width = AppConfig.get("logs", "max_separator_width", 120)
+        super().__init__(
+            "logs",
+            f"Shows system logs, {self.page_size} entries per page",
+            usage="logs [--page <number>] [--full] [--paper|--pager]",
+            examples=[
+                "logs",
+                "logs --page 2",
+                "logs --full",
+                "logs --full --page 2",
+                "logs --paper"
+            ]
+        )
+        self.logs_file = os.path.join(DATA_ROOT, "logs.json")
 
     def execute(self, args):
+        args = args.strip()
         if not os.path.exists(self.logs_file):
             return "Logs are empty."
 
+        data = self._load_logs()
+        if not data:
+            return "Logs are empty."
+
+        if "--pager" in args or "--paper" in args:
+            return self._run_pager(data)
+
+        page = self._parse_page(args)
+        if "--full" in args:
+            return self._format_full_page(data, page)
+
+        return self._format_page(data, page)
+
+    def _load_logs(self):
         with open(self.logs_file, 'r', encoding='utf-8') as f:
             try:
-                data = json.load(f)
+                return json.load(f)
             except json.JSONDecodeError:
                 raise ValueError("Error reading logs.")
 
-        recent_data = data[-10:]
+    def _parse_page(self, args):
+        page_match = re.search(r'--page\s+(\d+)', args)
+        if not page_match:
+            return 1
+
+        return max(1, int(page_match.group(1)))
+
+    def _format_page(self, data, page):
+        total_pages = max(1, (len(data) + self.page_size - 1) // self.page_size)
+        page = min(page, total_pages)
+        page_data = self._get_page_data(data, page)
+
         headers = ["Level", "Time", "Message", "Details"]
         rows = [
             [
                 item.get('level', '-'),
                 item.get('timestamp', '-'),
-                item.get('message', '-'),
-                json.dumps(item.get('details', {}), ensure_ascii=False)
+                self._truncate(item.get('message', '-'), self.message_width),
+                self._format_details(item.get('details', {}))
             ]
-            for item in recent_data
+            for item in page_data
         ]
 
-        return "System journal:\n" + ResultFormatter.format_table(headers, rows)
+        return (
+            f"System journal (page {page}/{total_pages}, {len(page_data)} of {len(data)} logs):\n"
+            + ResultFormatter.format_table(headers, rows)
+        )
+
+    def _format_full_page(self, data, page):
+        total_pages = max(1, (len(data) + self.page_size - 1) // self.page_size)
+        page = min(page, total_pages)
+        page_data = self._get_page_data(data, page)
+        lines = [f"System journal details (page {page}/{total_pages}, {len(page_data)} of {len(data)} logs):"]
+
+        for index, item in enumerate(page_data, start=1):
+            details = json.dumps(item.get("details", {}), ensure_ascii=False, indent=2)
+            lines.extend([
+                "",
+                f"{index}. [{item.get('level', '-')}] {item.get('timestamp', '-')}",
+                f"Message: {item.get('message', '-')}",
+                "Details:",
+                details
+            ])
+
+        return "\n".join(lines)
+
+    def _get_page_data(self, data, page):
+        end = len(data) - ((page - 1) * self.page_size)
+        start = max(0, end - self.page_size)
+        return data[start:end]
+
+    def _format_details(self, details):
+        details_text = json.dumps(details or {}, ensure_ascii=False)
+        return self._truncate(details_text, self.details_width)
+
+    def _truncate(self, text, width):
+        text = str(text)
+        if len(text) <= width:
+            return text
+
+        return text[:width - 3] + "..."
+
+    def _run_pager(self, data):
+        if not sys.stdin.isatty():
+            return self._format_page(data, 1)
+
+        page = 1
+        total_pages = max(1, (len(data) + self.page_size - 1) // self.page_size)
+        old_settings = termios.tcgetattr(sys.stdin)
+
+        try:
+            tty.setraw(sys.stdin.fileno())
+            sys.stdout.write("\033[?1049h")
+            while True:
+                sys.stdout.write("\033[2J\033[H")
+                sys.stdout.write(self._format_pager_page(data, page))
+                sys.stdout.write("\r\n\r\nLeft: newer | Right: older | q: quit")
+                sys.stdout.flush()
+
+                key = self._read_key()
+                if key in ("q", "Q"):
+                    break
+                if key == "RIGHT" and page < total_pages:
+                    page += 1
+                elif key == "LEFT" and page > 1:
+                    page -= 1
+        finally:
+            sys.stdout.write("\033[?1049l")
+            sys.stdout.flush()
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+
+        return "Closed logs pager."
+
+    def _format_pager_page(self, data, page):
+        total_pages = max(1, (len(data) + self.page_size - 1) // self.page_size)
+        page = min(page, total_pages)
+        page_data = self._get_page_data(data, page)
+        width = max(self.min_pager_width, shutil.get_terminal_size((self.default_pager_width, 24)).columns)
+        details_width = max(20, width - 12)
+        separator = "-" * min(width, self.max_separator_width)
+        lines = [
+            f"System journal page {page}/{total_pages} ({len(page_data)} of {len(data)} logs)",
+            separator
+        ]
+
+        for index, item in enumerate(page_data, start=1):
+            details = json.dumps(item.get("details", {}), ensure_ascii=False)
+            lines.extend([
+                f"{index}. [{item.get('level', '-')}] {item.get('timestamp', '-')}",
+                f"   {self._truncate(item.get('message', '-'), details_width)}",
+                f"   details: {self._truncate(details, details_width)}",
+                ""
+            ])
+
+        return "\r\n".join(lines)
+
+    def _read_key(self):
+        char = sys.stdin.read(1)
+        if char != "\x1b":
+            return char
+
+        sequence = sys.stdin.read(2)
+        if sequence == "[C":
+            return "RIGHT"
+        if sequence == "[D":
+            return "LEFT"
+
+        return char
+
+    def _clear_screen(self):
+        print("\033[2J\033[H", end="")
 
 class StatsTask(BaseTask):
     def __init__(self):
-        super().__init__("stats", "Shows statistics and a chart of file types (--path)")
+        super().__init__(
+            "stats",
+            "Shows statistics and a chart of file types",
+            usage="stats --path <folder>",
+            examples=["stats --path /home/user/Downloads"]
+        )
         self.rule_engine = RuleEngine(os.path.join("configs", "rules.json"))
 
     @log_execution
