@@ -14,10 +14,7 @@ DEFAULT_CONFIG = {
     "logs": {
         "page_size": 10,
         "message_width": 30,
-        "details_width": 70,
-        "min_pager_width": 60,
-        "default_pager_width": 100,
-        "max_separator_width": 120
+        "details_width": 70
     }
 }
 

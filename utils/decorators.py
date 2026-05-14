@@ -8,7 +8,6 @@ def log_execution(func):
         start_time = time.time()
         result = func(*args, **kwargs)
         end_time = time.time()
-        # In a real project, this could write to LoggerService.
-        # print(f"[DEBUG] Function {func.__name__} completed in {end_time - start_time:.4f} sec.")
+        print(f"Function {func.__name__} took {end_time - start_time:.4f} seconds to complete.")
         return result
     return wrapper

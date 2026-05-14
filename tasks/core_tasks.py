@@ -2,9 +2,6 @@ import os
 import shutil
 import re
 import json
-import sys
-import termios
-import tty
 
 from abstractions.base_task import BaseTask
 from utils.decorators import log_execution
@@ -302,19 +299,13 @@ class LogsTask(BaseTask):
         self.page_size = AppConfig.get("logs", "page_size", 10)
         self.message_width = AppConfig.get("logs", "message_width", 30)
         self.details_width = AppConfig.get("logs", "details_width", 70)
-        self.min_pager_width = AppConfig.get("logs", "min_pager_width", 60)
-        self.default_pager_width = AppConfig.get("logs", "default_pager_width", 100)
-        self.max_separator_width = AppConfig.get("logs", "max_separator_width", 120)
         super().__init__(
             "logs",
             f"Shows system logs, {self.page_size} entries per page",
-            usage="logs [--page <number>] [--full] [--paper|--pager]",
+            usage="logs [--page <number>]",
             examples=[
                 "logs",
-                "logs --page 2",
-                "logs --full",
-                "logs --full --page 2",
-                "logs --paper"
+                "logs --page 2"
             ]
         )
         self.logs_file = os.path.join(DATA_ROOT, "logs.json")
@@ -328,13 +319,7 @@ class LogsTask(BaseTask):
         if not data:
             return "Logs are empty."
 
-        if "--pager" in args or "--paper" in args:
-            return self._run_pager(data)
-
         page = self._parse_page(args)
-        if "--full" in args:
-            return self._format_full_page(data, page)
-
         return self._format_page(data, page)
 
     def _load_logs(self):
@@ -372,24 +357,6 @@ class LogsTask(BaseTask):
             + ResultFormatter.format_table(headers, rows)
         )
 
-    def _format_full_page(self, data, page):
-        total_pages = max(1, (len(data) + self.page_size - 1) // self.page_size)
-        page = min(page, total_pages)
-        page_data = self._get_page_data(data, page)
-        lines = [f"System journal details (page {page}/{total_pages}, {len(page_data)} of {len(data)} logs):"]
-
-        for index, item in enumerate(page_data, start=1):
-            details = json.dumps(item.get("details", {}), ensure_ascii=False, indent=2)
-            lines.extend([
-                "",
-                f"{index}. [{item.get('level', '-')}] {item.get('timestamp', '-')}",
-                f"Message: {item.get('message', '-')}",
-                "Details:",
-                details
-            ])
-
-        return "\n".join(lines)
-
     def _get_page_data(self, data, page):
         end = len(data) - ((page - 1) * self.page_size)
         start = max(0, end - self.page_size)
@@ -405,76 +372,6 @@ class LogsTask(BaseTask):
             return text
 
         return text[:width - 3] + "..."
-
-    def _run_pager(self, data):
-        if not sys.stdin.isatty():
-            return self._format_page(data, 1)
-
-        page = 1
-        total_pages = max(1, (len(data) + self.page_size - 1) // self.page_size)
-        old_settings = termios.tcgetattr(sys.stdin)
-
-        try:
-            tty.setraw(sys.stdin.fileno())
-            sys.stdout.write("\033[?1049h")
-            while True:
-                sys.stdout.write("\033[2J\033[H")
-                sys.stdout.write(self._format_pager_page(data, page))
-                sys.stdout.write("\r\n\r\nLeft: newer | Right: older | q: quit")
-                sys.stdout.flush()
-
-                key = self._read_key()
-                if key in ("q", "Q"):
-                    break
-                if key == "RIGHT" and page < total_pages:
-                    page += 1
-                elif key == "LEFT" and page > 1:
-                    page -= 1
-        finally:
-            sys.stdout.write("\033[?1049l")
-            sys.stdout.flush()
-            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-
-        return "Closed logs pager."
-
-    def _format_pager_page(self, data, page):
-        total_pages = max(1, (len(data) + self.page_size - 1) // self.page_size)
-        page = min(page, total_pages)
-        page_data = self._get_page_data(data, page)
-        width = max(self.min_pager_width, shutil.get_terminal_size((self.default_pager_width, 24)).columns)
-        details_width = max(20, width - 12)
-        separator = "-" * min(width, self.max_separator_width)
-        lines = [
-            f"System journal page {page}/{total_pages} ({len(page_data)} of {len(data)} logs)",
-            separator
-        ]
-
-        for index, item in enumerate(page_data, start=1):
-            details = json.dumps(item.get("details", {}), ensure_ascii=False)
-            lines.extend([
-                f"{index}. [{item.get('level', '-')}] {item.get('timestamp', '-')}",
-                f"   {self._truncate(item.get('message', '-'), details_width)}",
-                f"   details: {self._truncate(details, details_width)}",
-                ""
-            ])
-
-        return "\r\n".join(lines)
-
-    def _read_key(self):
-        char = sys.stdin.read(1)
-        if char != "\x1b":
-            return char
-
-        sequence = sys.stdin.read(2)
-        if sequence == "[C":
-            return "RIGHT"
-        if sequence == "[D":
-            return "LEFT"
-
-        return char
-
-    def _clear_screen(self):
-        print("\033[2J\033[H", end="")
 
 class StatsTask(BaseTask):
     def __init__(self):
